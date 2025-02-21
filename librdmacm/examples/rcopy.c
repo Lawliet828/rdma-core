@@ -1,32 +1,3 @@
-/*
- * Copyright (c) 2011 Intel Corporation.  All rights reserved.
- *
- * This software is available to you under the OpenIB.org BSD license
- * below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AWV
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,21 +16,16 @@
 
 #include <rdma/rsocket.h>
 
-#include "common.h"
-
 union rsocket_address {
 	struct sockaddr		sa;
 	struct sockaddr_in	sin;
 	struct sockaddr_in6	sin6;
-	struct sockaddr_storage storage;
 };
 
 static const char *port = "7427";
 static char *dst_addr;
 static char *dst_file;
 static char *src_file;
-static struct timeval start, end;
-//static void buf[1024 * 1024];
 static uint64_t bytes;
 static int fd;
 static void *file_addr;
@@ -81,50 +47,15 @@ struct msg_hdr {
 	uint64_t id;
 };
 
-struct msg_open {
-	struct msg_hdr hdr;
-	char path[0];
-};
-
 struct msg_write {
 	struct msg_hdr hdr;
 	uint64_t size;
 };
 
-static void show_perf(void)
-{
-	float usec;
+static size_t _recv(int rs, char *msg, size_t len) {
+	size_t ret;
 
-	usec = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
-
-	printf("%lld bytes in %.2f seconds = %.2f Gb/sec\n",
-	       (long long) bytes, usec / 1000000., (bytes * 8) / (1000. * usec));
-}
-
-static char *_ntop(union rsocket_address *rsa)
-{
-	static char addr[32];
-
-	switch (rsa->sa.sa_family) {
-	case AF_INET:
-		inet_ntop(AF_INET, &rsa->sin.sin_addr, addr, sizeof addr);
-		break;
-	case AF_INET6:
-		inet_ntop(AF_INET6, &rsa->sin6.sin6_addr, addr, sizeof addr);
-		break;
-	default:
-		addr[0] = '\0';
-		break;
-	}
-
-	return addr;
-}
-
-static size_t _recv(int rs, char *msg, size_t len)
-{
-	size_t ret, offset;
-
-	for (offset = 0; offset < len; offset += ret) {
+	for (size_t offset = 0; offset < len; offset += ret) {
 		ret = rrecv(rs, msg + offset, len - offset, 0);
 		if (ret <= 0)
 			return ret;
@@ -133,11 +64,8 @@ static size_t _recv(int rs, char *msg, size_t len)
 	return len;
 }
 
-static int msg_recv_hdr(int rs, struct msg_hdr *hdr)
-{
-	int ret;
-
-	ret = _recv(rs, (char *) hdr, sizeof *hdr);
+static int msg_recv_hdr(int rs, struct msg_hdr *hdr) {
+	int ret = _recv(rs, (char *) hdr, sizeof *hdr);
 	if (ret != sizeof *hdr)
 		return -1;
 
@@ -150,11 +78,8 @@ static int msg_recv_hdr(int rs, struct msg_hdr *hdr)
 	return sizeof *hdr;
 }
 
-static int msg_get_resp(int rs, struct msg_hdr *msg, uint8_t cmd)
-{
-	int ret;
-
-	ret = msg_recv_hdr(rs, msg);
+static int msg_get_resp(int rs, struct msg_hdr *msg, uint8_t cmd) {
+	int ret = msg_recv_hdr(rs, msg);
 	if (ret != sizeof *msg)
 		return ret;
 
@@ -167,10 +92,8 @@ static int msg_get_resp(int rs, struct msg_hdr *msg, uint8_t cmd)
 	return msg->data;
 }
 
-static void msg_send_resp(int rs, struct msg_hdr *msg, uint32_t status)
-{
+static void msg_send_resp(int rs, struct msg_hdr *msg, uint32_t status) {
 	struct msg_hdr resp;
-
 	resp.version = 0;
 	resp.command = msg->command | CMD_RESP;
 	resp.len = sizeof resp;
@@ -179,21 +102,22 @@ static void msg_send_resp(int rs, struct msg_hdr *msg, uint32_t status)
 	rsend(rs, (char *) &resp, sizeof resp, 0);
 }
 
-static int server_listen(void)
-{
+static int server_listen(void) {
 	struct addrinfo hints, *res;
-	int ret, rs;
-
 	memset(&hints, 0, sizeof hints);
 	hints.ai_flags = RAI_PASSIVE;
- 	ret = getaddrinfo(NULL, port, &hints, &res);
+ 	int ret = getaddrinfo(NULL, port, &hints, &res);
 	if (ret) {
 		printf("getaddrinfo failed: %s\n", gai_strerror(ret));
 		return ret;
 	}
 
-	rs = rs_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	int rs = rsocket(res->ai_family, res->ai_socktype, res->ai_protocol);
 	if (rs < 0) {
+		if (res->ai_socktype == SOCK_STREAM && errno == ENODEV)
+			fprintf(stderr, "No RDMA devices were detected\n");
+		else
+			perror("rsocket failed");
 		ret = rs;
 		goto free;
 	}
@@ -227,8 +151,7 @@ free:
 	return ret;
 }
 
-static int server_open(int rs, struct msg_hdr *msg)
-{
+static int server_open(int rs, struct msg_hdr *msg) {
 	char *path = NULL;
 	int ret, len;
 
@@ -336,8 +259,7 @@ out:
 	return ret;
 }
 
-static void server_process(int rs)
-{
+static void server_process(int rs) {
 	struct msg_hdr msg;
 	int ret;
 
@@ -366,13 +288,30 @@ static void server_process(int rs)
 	} while (!ret);
 }
 
-static int server_run(void)
-{
-	int lrs, rs;
+static char *_ntop(union rsocket_address *rsa) {
+	static char addr[32];
+
+	switch (rsa->sa.sa_family) {
+	case AF_INET:
+		inet_ntop(AF_INET, &rsa->sin.sin_addr, addr, sizeof addr);
+		break;
+	case AF_INET6:
+		inet_ntop(AF_INET6, &rsa->sin6.sin6_addr, addr, sizeof addr);
+		break;
+	default:
+		addr[0] = '\0';
+		break;
+	}
+
+	return addr;
+}
+
+static int server_run(void) {
+	int rs;
 	union rsocket_address rsa;
 	socklen_t len;
 
-	lrs = server_listen();
+	int lrs = server_listen();
 	if (lrs < 0)
 		return lrs;
 
@@ -391,27 +330,32 @@ static int server_run(void)
 	return 0;
 }
 
-static int client_connect(void)
-{
+static int client_connect(void) {
 	struct addrinfo *res;
-	int ret, rs;
 
- 	ret = getaddrinfo(dst_addr, port, NULL, &res);
+ 	int ret = getaddrinfo(dst_addr, port, NULL, &res);
 	if (ret) {
 		printf("getaddrinfo failed: %s\n", gai_strerror(ret));
 		return ret;
 	}
 
-	rs = rs_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	int rs = rsocket(res->ai_family, res->ai_socktype, res->ai_protocol);
 	if (rs < 0) {
+		if (res->ai_socktype == SOCK_STREAM && errno == ENODEV)
+			fprintf(stderr, "No RDMA devices were detected\n");
+		else
+			perror("rsocket failed");
 		goto free;
 	}
+	printf("rsocket success\n");
 
 	ret = rconnect(rs, res->ai_addr, res->ai_addrlen);
 	if (ret) {
-		perror("rconnect failed\n");
+		perror("rconnect failed");
 		rclose(rs);
 		rs = ret;
+	} else {
+		printf("rconnect success\n");
 	}
 
 free:
@@ -419,12 +363,13 @@ free:
 	return rs;
 }
 
-static int client_open(int rs)
-{
+static int client_open(int rs) {
+	struct msg_open {
+		struct msg_hdr hdr;
+		char path[];
+	};
 	struct msg_open *msg;
 	struct stat stats;
-	uint32_t len;
-	int ret;
 
 	printf("opening...");
 	fflush(NULL);
@@ -432,7 +377,7 @@ static int client_open(int rs)
 	if (fd < 0)
 		return fd;
 
-	ret = fstat(fd, &stats);
+	int ret = fstat(fd, &stats);
 	if (ret < 0)
 		goto err1;
 
@@ -443,7 +388,7 @@ static int client_open(int rs)
 		goto err1;
 	}
 
-	len = (((uint32_t) strlen(dst_file)) + 8) & 0xFFFFFFF8;
+	uint32_t len = (((uint32_t) strlen(dst_file)) + 8) & 0xFFFFFFF8;
 	msg = calloc(1, sizeof(*msg) + len);
 	if (!msg) {
 		ret = -1;
@@ -473,10 +418,8 @@ err1:
 	return ret;
 }
 
-static int client_start_write(int rs)
-{
+static int client_start_write(int rs) {
 	struct msg_write msg;
-	int ret;
 
 	printf("transferring");
 	fflush(NULL);
@@ -485,24 +428,21 @@ static int client_start_write(int rs)
 	msg.hdr.len = sizeof(msg);
 	msg.size = bytes;
 
-	ret = rsend(rs, &msg, sizeof msg, 0);
+	int ret = rsend(rs, &msg, sizeof msg, 0);
 	if (ret != msg.hdr.len)
 		return ret;
 
 	return 0;
 }
 
-static int client_close(int rs)
-{
-	struct msg_hdr msg;
-	int ret;
-
+static int client_close(int rs) {
 	printf("closing...");
 	fflush(NULL);
+	struct msg_hdr msg;
 	memset(&msg, 0, sizeof msg);
 	msg.command = CMD_CLOSE;
 	msg.len = sizeof msg;
-	ret = rsend(rs, (char *) &msg, msg.len, 0);
+	int ret = rsend(rs, (char *) &msg, msg.len, 0);
 	if (ret != msg.len)
 		goto out;
 
@@ -517,17 +457,15 @@ out:
 	return ret;
 }
 
-static int client_run(void)
-{
+static int client_run(void) {
 	struct msg_hdr ack;
-	int ret, rs;
 	size_t len;
 
-	rs = client_connect();
+	int rs = client_connect();
 	if (rs < 0)
 		return rs;
 
-	ret = client_open(rs);
+	int ret = client_open(rs);
 	if (ret)
 		goto shutdown;
 
@@ -537,6 +475,7 @@ static int client_run(void)
 
 	printf("...");
 	fflush(NULL);
+	struct timeval start, end;
 	gettimeofday(&start, NULL);
 	len = rsend(rs, file_addr, bytes, 0);
 	if (len == bytes)
@@ -551,13 +490,15 @@ close:
 shutdown:
 	rshutdown(rs, SHUT_RDWR);
 	rclose(rs);
-	if (!ret)
-		show_perf();
+	if (!ret) {
+		float usec = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
+		printf("%lld bytes in %.2f seconds = %.2f Gb/sec\n",
+			   (long long) bytes, usec / 1000000., (bytes * 8) / (1000. * usec));
+	}
 	return ret;
 }
 
-static void show_usage(char *program)
-{
+static void show_usage(char *program) {
 	printf("usage 1: %s [options]\n", program);
 	printf("\t     starts the server application\n");
 	printf("\t[-p  port_number]\n");
@@ -569,8 +510,7 @@ static void show_usage(char *program)
 	exit(1);
 }
 
-static void server_opts(int argc, char **argv)
-{
+static void server_opts(int argc, char **argv) {
 	int op;
 
 	while ((op = getopt(argc, argv, "p:")) != -1) {
@@ -584,23 +524,23 @@ static void server_opts(int argc, char **argv)
 	}
 }
 
-static void client_opts(int argc, char **argv)
-{
-	int op;
-
-	if (argc < 3)
+static void client_opts(int argc, char **argv) {
+	if (argc < 3) {
 		show_usage(argv[0]);
-
+	}
+	
 	src_file = argv[1];
 	dst_addr = argv[2];
-	dst_file = strchr(dst_addr, ':');
-	if (dst_file) {
-		*dst_file = '\0';
-		dst_file++;
-	}
-	if (!dst_file)
+	// 如果目标地址中包含冒号，则分离出目标文件名
+	char *colon = strchr(dst_addr, ':');
+	if (colon) {
+		*colon = '\0';
+		dst_file = colon + 1;
+	} else {
 		dst_file = src_file;
+	}
 
+	int op;
 	while ((op = getopt(argc, argv, "p:")) != -1) {
 		switch (op) {
 		case 'p':
@@ -610,11 +550,9 @@ static void client_opts(int argc, char **argv)
 			show_usage(argv[0]);
 		}
 	}
-
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
 	int ret;
 
 	if (argc == 1 || argv[1][0] == '-') {
